@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+
+# slapt-mod-upgrade
+# A script to upgrade Porteus modules using the slapt-mod tool.
+# lcpterid, 2026
+# with some code from slapt-mod by babam and ncmprhnsbl
+
+. /usr/share/porteus/porteus-functions
+get_colors
+lightblue () { echo -e ${txtbld}$(tput setaf 12) "$1" $rst; }
+
+declare -a module_folders
+
+prog_name="$(basename "$0")"
+nu='[0-9]'
+major_minor_eregex="^$nu+\.$nu+$"
+major_minor_patch_eregex="^$nu+\.$nu+\.$nu+$"
+# Valid package name: Need at least 4 non-dash regions separated by dashes
+# i.e. basename-version-arch-build, where basename may contain dashes
+slackware_package_eregex="[^-]+(-[^-]+){3}"
+pkg_list_raw=''
+pkg_list=''
+current_module_folder=''
+
+# Must be root:
+swtch_rt () {
+if [ `whoami` != "root" ]; then
+	red "Please enter root user password"
+	su -c "sh $0 $*"
+	yellow "For ease of use, su to root user first."
+	exit
+fi
+}
+
+error_quit () {
+	[ "$1" -ne 0 ] && red "$0: error: $2"
+	exit "$1"
+}
+
+offer_update () {
+	lightblue "Would you like to update the package lists?"
+	read -r tmp_answer
+	if [ "${tmp_answer:0:1}" = "y" ] || [ "${tmp_answer:0:1}" = "Y" ]; then
+		slapt-mod -u
+	fi
+	unset tmp_answer
+}
+
+slapt_getlist () {
+	pkg_list_raw="$(slapt-get --available)" || error_quit 1 "Could not run slapt-get"
+	pkg_list="$(echo "$pkg_list_raw" | sed 's/ .*$//')"
+}
+
+add_folder () {
+	# add folder if it exists and is not in module_folders array
+	[ -d "$1" ] &&
+		! echo "${module_folders[@]}" | grep -Fw "$1" >/dev/null &&
+		module_folders+=("$1")
+}
+
+# Get module directories
+populate_folders () {
+	# default Porteus folders
+	for i in modules optional; do
+		add_folder "$PORTDIR/$i"
+	done
+
+	# extra module directories defined in cheat code
+	cheatcodes_file="/etc/bootcmd.cfg" 
+	if [ -f "$cheatcodes_file" ] && grep '^extramod=' "$cheatcodes_file" >/dev/null; then
+		extramod_folders="$(grep '^extramod=' "$cheatcodes_file" | sed 's/^extramod=//')"
+		IFS=";"
+		for emf in $extramod_folders; do
+			add_folder "$emf"
+		done
+		unset IFS
+	fi
+
+	# custom module directories defined in lsmodules app
+	if [ -f "$HOME/.config/lsmodules" ]; then
+		while read -r custom_dir; do
+			add_folder "$custom_dir"
+		done < "$HOME/.config/lsmodules" 
+	fi
+}
+
+
+# Input to following functions is a full package name
+# You could reconstruct the whole package name via:
+# "$(get_base_name "$pkg")-$(get_version "$pkg")-$(get_arch "$pkg")-$(get_build "$pkg")""
+
+get_base_name () {
+	# Python equivalent: pkgname.split('-')[:-4]
+	printf "%s" "$1" | sed 's/ .*$//' | sed -E 's/-[^-]+-[^-]+-[^-]+$//'
+}
+
+get_version () {
+	# Python equivalent: pkgname.split('-')[-3]
+	printf "%s" "$1" | sed 's/ .*$//' | sed -E 's/-[^-]+-[^-]+$//' | sed -E 's/^.*-([^-]+)$/\1/'
+}
+
+get_arch () {
+	# Python equivalent: pkgname.split('-')[-2]
+	printf "%s" "$1" | sed 's/ .*$//' | sed -E 's/-[^-]+$//' | sed -E 's/^.*-([^-]+)$/\1/'
+}
+
+get_build () {
+	# Python equivalent: pkgname.split('-')[-1]
+	printf "%s" "$1" | sed 's/ .*$//' | sed -E 's/^.*-([^-]+)$/\1/'
+}
+
+
+valid_packages_in_module () {
+	# Only consider packages whose names meet the basic Slackware regex
+	package_path='/var/lib/pkgtools/packages' 
+	lsxzm "$1" |
+		grep "^${package_path}/." |
+		sed "s|^${package_path}/||" |
+		grep -E "$slackware_package_eregex"
+}
+
+same_base_name_as () {
+	while read -r fullpkg; do
+		[ "$(get_base_name "$fullpkg")" = "$1" ] && echo "$fullpkg"
+	done
+}
+
+newer_than () {
+	local reference_version="$1"
+	while read -r fullpkg; do
+		local version="$(get_version "$fullpkg")"
+		local major_regex='s/^([0-9]+)\..*$/\1/'
+		local minor_regex='s/^[0-9]+\.([0-9]+)(\..*)?$/\1/'
+		local patch_regex='s/^.*\.([0-9]+)$/\1/'
+		local major="$(echo "$version" | sed -E "$major_regex")"
+		local minor="$(echo "$version" | sed -E "$minor_regex")"
+		local patch="$(echo "$version" | sed -E "$patch_regex")"
+		local reference_major="$(echo "$reference_version" | sed -E "$major_regex")"
+		local reference_minor="$(echo "$reference_version" | sed -E "$minor_regex")"
+		local reference_patch="$(echo "$reference_version" | sed -E "$patch_regex")"
+		if [[ "$reference_version" =~ $major_minor_patch_eregex ]] && [[ "$version" =~ $major_minor_patch_eregex ]]; then
+			if [ "$major" -gt "$reference_major" ]; then
+				echo "$fullpkg"
+			elif [ "$major" -eq "$reference_major" ] &&
+				[ "$minor" -gt "$reference_minor" ]; then
+				echo "$fullpkg"
+			elif [ "$major" -eq "$reference_major" ] &&
+				[ "$minor" -eq "$reference_minor" ] && 
+				[ "$patch" -gt "$reference_patch" ]; then
+				echo "$fullpkg"
+			else
+				:
+			fi
+		elif [[ "$reference_version" =~ $major_minor_eregex ]] && [[ "$version" =~ $major_minor_eregex ]]; then
+			if [ "$major" -gt "$reference_major" ]; then
+				echo "$fullpkg"
+			elif [ "$major" -eq "$reference_major" ] &&
+				[ "$minor" -gt "$reference_minor" ]; then
+				echo "$fullpkg"
+			else
+				:
+			fi
+		else
+			# Just find the numbers and compare them
+			local reference_version_stripped="$(echo "$reference_version" | tr -dC '0-9')"
+			local version_stripped="$(echo "$version" | tr -dC '0-9')"
+			[ "$version_stripped" -gt "$reference_version_stripped" ] && echo "$fullpkg"
+		fi
+	done
+}
+
+is_valid_module () {
+	[ -f "$1" ] || return 1
+
+	local filetype="$(file "$1")"
+	grep "quashfs" < <(echo "$filetype") >/dev/null || {
+		red "$1 does not appear to be a squashfs module"
+		return 1
+		}
+
+
+	local mod_path="$(realpath "$1")"
+	local mod_name="$(basename "$mod_path")"
+	local mod_stem="${mod_name%\.xzm}"
+	if ! grep "/var/lib/pkgtools/packages/$mod_stem" < <(lsxzm "$mod_path") >/dev/null; then
+		red "didn't find package file /var/lib/pkgtools/packages/$mod_stem in lsxzm"
+		return 1
+	else
+		return 0
+	fi
+}
+
+is_untampered () {
+
+	local check_mod_path="$1"
+
+	# a. Get date of module formation from unsquashfs -stat:
+	# b. Get date from -ll var/lib/pkgtools/packages/(name of file): unsquashfs -stat ed-1.17-x86_64-3.xzm | grep time | rev | cut -d ' ' -f 1-4 | rev
+	# c. Should be the same time (within 15 mins).
+
+	pkgfile_date="$(unsquashfs -ll "$check_mod_path" "var/lib/pkgtools/packages/$mod_stem" | tail -1 | sed 's/  */ /g' | cut -d ' ' -f 4-5)"
+
+	xzm_date="$(unsquashfs -stat "$check_mod_path" | grep time | rev | sed 's/  */ /g' | cut -d ' ' -f 1-4 | rev)"
+
+	pkgfile_epoch=$(date -d "$pkgfile_date" '+%s')
+	xzm_epoch=$(date -d "$xzm_date" '+%s')
+
+	pkg_to_xzm_time="$((xzm_epoch - pkgfile_epoch))"
+
+	if [ "$pkg_to_xzm_time" -gt 900 ]; then
+		return 1
+	else
+		return 0
+	fi
+}
+
+upgrade_module () {
+	local mod_name="$(realpath "$1")"
+	cyan "Module: $mod_name"
+	is_valid_module "$mod_name" || return 1
+	local filetype="$(file "$1")"
+	local compressopt
+	if [ -n "$(grep "zstd" < <(echo "$filetype"))" ]; then
+	       compressopt="-N"
+	else
+	       compressopt="-n"
+	fi
+
+	local found_newer="no"
+	local can_rebuild="yes"
+	local -a new_packages
+	local -a all_packages
+	local first_missing_package
+	local mod_pkg_list="$(valid_packages_in_module "$mod_name")"
+	while read -r mod_pkg; do
+
+		mod_pkg_name=$(get_base_name "$mod_pkg")
+		mod_pkg_version=$(get_version "$mod_pkg")
+
+		# replacements are packages with the same base name, but not full name
+		# and whose version number appears newer.
+		# In case of a clash, pick the later one alphabetically
+		replacements="$(echo "$pkg_list" |
+			grep -v "$mod_pkg" |
+			grep "^$mod_pkg_name" |
+			same_base_name_as "$mod_pkg_name" |
+			newer_than "$(get_version "$mod_pkg_version")" |
+			sort -n |
+			tail -1)"
+		# We also need to know whether the very same version is still present
+		local samepkg="$(echo "$pkg_list" | grep "$mod_pkg")"
+		if [ -n "$replacements" ]; then
+		       found_newer="yes"
+		       new_packages+=("$replacements")
+		       all_packages+=("$replacements")
+		elif [ -n "$samepkg" ]; then
+		       all_packages+=("$samepkg")
+	       else
+		       first_missing_package="$mod_pkg"
+		       can_rebuild="no"
+		fi
+
+	done < <(echo "$mod_pkg_list")
+
+	if [ "$can_rebuild" = "no" ]; then
+		red "Couldn't find all packages needed to rebuild module. First missing package was $first_missing_package."
+		return 1
+	elif ! is_untampered "$mod_name"; then
+		yellow "NB: this module may have been edited after creation with slapt-mod. If so, be careful not to lose your changes."
+	fi
+	if [ "$found_newer" = "yes" ]; then
+		echo "Existing packages in this module:"
+		echo "$mod_pkg_list" | tr '\n' ' ' | fold -w "$(tput cols)" -s
+		echo
+		green "Found possible newer packages:"
+		green "${new_packages[@]}"
+		echo "Updated module would have new packages:"
+		echo "${all_packages[@]}"
+		lightblue "Do you want to try? (y/n)"
+		read -r tmp_answer </dev/tty
+		if [ "${tmp_answer:0:1}" = "y" ] || [ "${tmp_answer:0:1}" = "Y" ]; then
+			slapt-mod "$compressopt" "${all_packages[@]}" </dev/tty
+		fi
+		unset tmp_answer
+	else
+		yellow "Didn't find any updates."
+	fi
+
+}
+
+upgrade_folder () {
+	while read -r xzm_path; do
+		upgrade_module "$xzm_path"
+	done < <(find "$1" -name "*.xzm" -maxdepth 1)
+}
+
+swtch_rt "$@"
+
+if [ "$#" -eq 0 ]; then
+	offer_update
+	slapt_getlist
+	populate_folders
+	for mf in "${module_folders[@]}"; do
+		current_module_folder="$mf"
+		lightblue "Starting module folder: $mf"
+		upgrade_folder "$mf"
+	done
+fi
+
+if [ "$#" -eq 1 ] && [ -f "$1" ]; then
+	offer_update
+	slapt_getlist
+	upgrade_module "$1"
+fi
+
+if [ "$#" -eq 1 ] && [ -d "$1" ] && [ -n "$(find "$1" -type f -name "*.xzm" -maxdepth 1)" ]; then
+	offer_update
+	slapt_getlist
+	upgrade_folder "$1"
+fi
+

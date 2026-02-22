@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Build a Porteus module for slapt-mod-upgrade
+
+if [ "$(whoami)" != "root" ]; then
+	echo "Please run this script as root!"
+	exit 1
+fi
+
+pkg_name="slapt-mod-upgrade"
+pkg_version="0.0.1"
+pkg_arch="noarch"
+
+if ! which dir2xzm; then
+	echo "dir2xzm not found. Are you on Porteus?"
+	exit 1
+fi
+
+chown -R root:root dist/
+pushd "$(dirname "$(realpath "$0")")" &>/dev/null || exit 1
+dir2xzm dist/ "${pkg_name}-${pkg_version}-${pkg_arch}.xzm"
+popd &>/dev/null
