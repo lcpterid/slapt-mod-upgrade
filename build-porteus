@@ -7,7 +7,7 @@ if [ "$(whoami)" != "root" ]; then
 fi
 
 pkg_name="slapt-mod-upgrade"
-pkg_version="0.0.1"
+pkg_version="0.0.2dev"
 pkg_arch="noarch"
 
 if ! which dir2xzm; then
