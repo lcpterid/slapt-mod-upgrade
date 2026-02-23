@@ -21,6 +21,18 @@ slackware_package_eregex="[^-]+(-[^-]+){3}"
 pkg_list_raw=''
 pkg_list=''
 current_module_folder=''
+echo2 () {
+	echo "$1" >&2
+}
+
+get_help () {
+	echo2 "$prog_name: Attempt to upgrade Porteus modules made with slapt-mod."
+	echo2
+	echo2 "Usage:"
+	echo2 "$prog_name                         Update all modules in all known module directories."
+	echo2 "$prog_name /path/to/directory      Update all modules in the given directory."
+	echo2 "$prog_name /path/to/file.xzm       Update the given module only."
+}
 
 # Must be root:
 swtch_rt () {
@@ -38,7 +50,7 @@ error_quit () {
 }
 
 offer_update () {
-	lightblue "Would you like to update the package lists?"
+	lightblue "Would you like to update the package lists? (y/n)"
 	read -r tmp_answer
 	if [ "${tmp_answer:0:1}" = "y" ] || [ "${tmp_answer:0:1}" = "Y" ]; then
 		slapt-mod -u
@@ -214,16 +226,35 @@ is_untampered () {
 	fi
 }
 
+offer_move () {
+	local mod_path="$(realpath "$1")"
+	local mod_name="$(basename "$mod_path")"
+	local mod_folder="$(dirname "$mod_path")"
+
+	[ -f "/tmp/$mod_name" ] || return 1
+
+	lightblue "Would you like to move the new module from /tmp to the folder $mod_folder?"
+	if [ -f "$mod_path" ]; then
+		yellow "WARNING: this will overwrite an existing module! The old module will be deleted."
+	fi
+	lightblue "Please type an UPPERCASE Y to proceed."
+	read -r tmp_answer
+	if [ "${tmp_answer:0:1}" = "Y" ]; then
+		mv "/tmp/$mod_name" "$mod_path"
+	fi
+}
+
 upgrade_module () {
-	local mod_name="$(realpath "$1")"
-	cyan "Module: $mod_name"
-	is_valid_module "$mod_name" || return 1
+	local mod_path="$(realpath "$1")"
+	local mod_name="$(basename "$mod_path")"
+	cyan "Module: $mod_path"
+	is_valid_module "$mod_path" || return 1
 	local filetype="$(file "$1")"
 	local compressopt
 	if [ -n "$(grep "zstd" < <(echo "$filetype"))" ]; then
-	       compressopt="-N"
-	else
 	       compressopt="-n"
+	else
+	       compressopt="-N"
 	fi
 
 	local found_newer="no"
@@ -231,7 +262,24 @@ upgrade_module () {
 	local -a new_packages
 	local -a all_packages
 	local first_missing_package
-	local mod_pkg_list="$(valid_packages_in_module "$mod_name")"
+	local mod_pkg_name
+	local mod_pkg_version
+	local mod_pkg_list_raw="$(valid_packages_in_module "$mod_path")"
+	if [ "$(echo "$mod_pkg_list_raw" | wc -l)" -ne "$(lsxzm "$1" | grep '^/var/lib/pkgtools/packages/.' | wc -l)" ]; then
+		red "Found package with a non-standard name - can't update this module."
+		return 1
+	fi
+
+	# Hoist the original package name to the top, so the new module will be named after it
+	mod_pkg_name=$(get_base_name "${mod_name%.xzm}")
+	local mod_pkg_list="$(echo "$mod_pkg_list_raw" | grep "^$mod_pkg_name"; echo "$mod_pkg_list_raw" | grep -v "^$mod_pkg_name")"
+
+	if [ "$(echo "$mod_pkg_list_raw" | wc -l)" -ne "$(echo "$mod_pkg_list" | wc -l)" ]; then
+		red "The module seems to be named after a package that is not present inside it. Can't update this module."
+		return 1
+	fi
+
+
 	while read -r mod_pkg; do
 
 		mod_pkg_name=$(get_base_name "$mod_pkg")
@@ -265,21 +313,26 @@ upgrade_module () {
 	if [ "$can_rebuild" = "no" ]; then
 		red "Couldn't find all packages needed to rebuild module. First missing package was $first_missing_package."
 		return 1
-	elif ! is_untampered "$mod_name"; then
+	elif ! is_untampered "$mod_path"; then
 		yellow "NB: this module may have been edited after creation with slapt-mod. If so, be careful not to lose your changes."
 	fi
+
+
 	if [ "$found_newer" = "yes" ]; then
 		echo "Existing packages in this module:"
 		echo "$mod_pkg_list" | tr '\n' ' ' | fold -w "$(tput cols)" -s
 		echo
 		green "Found possible newer packages:"
-		green "${new_packages[@]}"
+		green "${new_packages[@]}" | fold -w "$(tput cols)" -s
 		echo "Updated module would have new packages:"
-		echo "${all_packages[@]}"
+		echo "${all_packages[@]}" | fold -w "$(tput cols)" -s
 		lightblue "Do you want to try? (y/n)"
-		read -r tmp_answer </dev/tty
+		read -r tmp_answer
 		if [ "${tmp_answer:0:1}" = "y" ] || [ "${tmp_answer:0:1}" = "Y" ]; then
-			slapt-mod "$compressopt" "${all_packages[@]}" </dev/tty
+			slapt-mod "$compressopt" "${all_packages[@]}"
+			local new_mod_name="${all_packages[0]}.xzm"
+			local new_mod_path="$(dirname "$mod_path")/$new_mod_name"
+			[ -f "/tmp/$new_mod_name" ] && offer_move "$new_mod_path"
 		fi
 		unset tmp_answer
 	else
@@ -289,9 +342,15 @@ upgrade_module () {
 }
 
 upgrade_folder () {
+	local -a modules_in_folder
+
 	while read -r xzm_path; do
-		upgrade_module "$xzm_path"
+		modules_in_folder+=("$xzm_path")
 	done < <(find "$1" -name "*.xzm" -maxdepth 1)
+
+	for mif in "${modules_in_folder[@]}"; do
+		upgrade_module "$mif"
+	done
 }
 
 swtch_rt "$@"
@@ -302,9 +361,13 @@ if [ "$#" -eq 0 ]; then
 	populate_folders
 	for mf in "${module_folders[@]}"; do
 		current_module_folder="$mf"
-		lightblue "Starting module folder: $mf"
+		lightblue "Starting module directory: $mf"
 		upgrade_folder "$mf"
 	done
+fi
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	get_help
 fi
 
 if [ "$#" -eq 1 ] && [ -f "$1" ]; then
