@@ -29,9 +29,13 @@ get_help () {
 	echo2 "$prog_name: Attempt to upgrade Porteus modules made with slapt-mod."
 	echo2
 	echo2 "Usage:"
-	echo2 "$prog_name                         Update all modules in all known module directories."
-	echo2 "$prog_name /path/to/directory      Update all modules in the given directory."
-	echo2 "$prog_name /path/to/file.xzm       Update the given module only."
+	echo2 "$prog_name [options]                        Update all modules in all known module directories."
+	echo2 "$prog_name [options] /path/to/directory      Update all modules in the given directory."
+	echo2 "$prog_name [options] /path/to/file.xzm       Update the given module only."
+	echo2
+	echo2 "Options:"
+	echo2 "-u         force package list update"
+	echo2 "-U         force no package list update"
 }
 
 # Must be root:
@@ -56,6 +60,11 @@ offer_update () {
 		slapt-mod -u
 	fi
 	unset tmp_answer
+}
+
+handle_update () {
+	[ "$update_list" = "yes" ] && slapt-mod -u
+	[ "$update_list" = "ask" ] && offer_update
 }
 
 slapt_getlist () {
@@ -348,37 +357,68 @@ upgrade_folder () {
 		modules_in_folder+=("$xzm_path")
 	done < <(find "$1" -name "*.xzm" -maxdepth 1)
 
-	for mif in "${modules_in_folder[@]}"; do
-		upgrade_module "$mif"
-	done
+	if [ "${#modules_in_folder[*]}" -eq 0 ]; then
+		red "No modules found in folder $1"
+	else
+		for mif in "${modules_in_folder[@]}"; do
+			upgrade_module "$mif"
+		done
+	fi
 }
 
 swtch_rt "$@"
 
+# Option vars
+update_list="ask"
+
+# Parse short options
+while getopts ":huU" thisopt; do
+	case "$thisopt" in
+		h)
+			get_help
+			exit
+			;;
+		u)
+			update_list="yes"
+			;;
+		U)
+			update_list="no"
+			;;
+		?)
+			error_quit 1 "invalid option -$OPTARG"
+			;;
+	esac
+done
+
+shift $(( OPTIND - 1 ))
+
+# Parse long options
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	get_help
+	exit
+fi
+
 if [ "$#" -eq 0 ]; then
-	offer_update
+	handle_update
 	slapt_getlist
 	populate_folders
 	for mf in "${module_folders[@]}"; do
-		current_module_folder="$mf"
 		lightblue "Starting module directory: $mf"
 		upgrade_folder "$mf"
 	done
-fi
+else
+	if [ -f "$1" ]; then
+		handle_update
+		slapt_getlist
+		upgrade_module "$1"
 
-if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-	get_help
-fi
+	elif [ -d "$1" ]; then
+		handle_update
+		slapt_getlist
+		upgrade_folder "$1"
 
-if [ "$#" -eq 1 ] && [ -f "$1" ]; then
-	offer_update
-	slapt_getlist
-	upgrade_module "$1"
-fi
-
-if [ "$#" -eq 1 ] && [ -d "$1" ] && [ -n "$(find "$1" -type f -name "*.xzm" -maxdepth 1)" ]; then
-	offer_update
-	slapt_getlist
-	upgrade_folder "$1"
+	else
+		error_quit 2 "could not find file or directory: $1"
+	fi
 fi
 
