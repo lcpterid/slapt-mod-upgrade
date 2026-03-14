@@ -20,7 +20,6 @@ major_minor_patch_eregex="^$nu+\.$nu+\.$nu+$"
 slackware_package_eregex="[^-]+(-[^-]+){3}"
 pkg_list_raw=''
 pkg_list=''
-current_module_folder=''
 echo2 () {
 	echo "$1" >&2
 }
@@ -34,8 +33,14 @@ get_help () {
 	echo2 "$prog_name [options] /path/to/file.xzm       Update the given module only."
 	echo2
 	echo2 "Options:"
-	echo2 "-u         force package list update"
-	echo2 "-U         force no package list update"
+	echo2 "-u          Always update package list"
+	echo2 "-U          Do not update package list"
+	echo2 "-r          Explore folders recursively"
+	echo2 "-m          Always move updated packages to original folder"
+	echo2 "-M          Do not move updated packages to original folder"
+	echo2 "-o          When moving, overwrite packages of the same name WITHOUT making a .bak backup"
+	echo2 "-x word     Exclude modules whose name contains the given word"
+	echo2 "-X word     Exclude folders whose name contains the given word"
 }
 
 # Must be root:
@@ -74,9 +79,11 @@ slapt_getlist () {
 
 add_folder () {
 	# add folder if it exists and is not in module_folders array
-	[ -d "$1" ] &&
-		! echo "${module_folders[@]}" | grep -Fw "$1" >/dev/null &&
-		module_folders+=("$1")
+	if [ -d "$1" ] && ! echo "${module_folders[@]}" | grep -Fw "$1" >/dev/null; then
+		if [ -z "$exclude_folders" ] || ! [[ "$(basename "$1")" =~ "$exclude_folders" ]]; then
+			module_folders+=("$1")
+		fi
+	fi
 }
 
 # Get module directories
@@ -235,21 +242,46 @@ is_untampered () {
 	fi
 }
 
+do_move () {
+	local old_path
+	local new_path
+	old_path="$1"
+	new_path="$2"
+	if [ "$overwrite_files" = "no" ] && [ -f "$new_path" ]; then
+		mv "$new_path" "$new_path.bak"
+	fi
+	mv "$old_path" "$new_path"
+}
+
 offer_move () {
-	local mod_path="$(realpath "$1")"
-	local mod_name="$(basename "$mod_path")"
-	local mod_folder="$(dirname "$mod_path")"
+	local old_mod_path="$(realpath "$1")"
+	local new_mod_path="$(realpath "$2")"
+	local ui_deletion_state
 
-	[ -f "/tmp/$mod_name" ] || return 1
-
-	lightblue "Would you like to move the new module from /tmp to the folder $mod_folder?"
+	lightblue "Would you like to move the new module from /tmp to the folder $(dirname "$new_mod_path")?"
 	if [ -f "$mod_path" ]; then
-		yellow "WARNING: this will overwrite an existing module! The old module will be deleted."
+		ui_deletion_state="renamed with extension .bak"
+		[ "$overwrite_files" = "yes" ] && ui_deletion_state="deleted"
+
+		yellow "WARNING: this will overwrite an existing module! The old module will be ${ui_deletion_state}."
 	fi
 	lightblue "Please type an UPPERCASE Y to proceed."
 	read -r tmp_answer
 	if [ "${tmp_answer:0:1}" = "Y" ]; then
-		mv "/tmp/$mod_name" "$mod_path"
+		do_move "$old_mod_path" "$new_mod_path"
+	fi
+}
+
+handle_move () {
+	local mod_path="$(realpath "$1")"
+	local mod_name="$(basename "$mod_path")"
+
+	[ -f "/tmp/$mod_name" ] || return 1
+
+	if [ "$move_files" = "yes" ]; then
+		do_move "/tmp/$mod_name" "$mod_path"
+	elif [ "$move_files" = "ask" ]; then
+		offer_move "/tmp/$mod_name" "$mod_path"
 	fi
 }
 
@@ -341,7 +373,7 @@ upgrade_module () {
 			slapt-mod "$compressopt" "${all_packages[@]}"
 			local new_mod_name="${all_packages[0]}.xzm"
 			local new_mod_path="$(dirname "$mod_path")/$new_mod_name"
-			[ -f "/tmp/$new_mod_name" ] && offer_move "$new_mod_path"
+			[ -f "/tmp/$new_mod_name" ] && handle_move "$new_mod_path"
 		fi
 		unset tmp_answer
 	else
@@ -351,11 +383,21 @@ upgrade_module () {
 }
 
 upgrade_folder () {
+	local modules_raw
 	local -a modules_in_folder
+	if [ "$recursive" = "yes" ]; then
+		modules_raw="$(find "$1" -type f -name "*.xzm")"
+	else
+		modules_raw="$(find "$1" -type f -name "*.xzm" -maxdepth 1)"
+	fi
 
-	while read -r xzm_path; do
-		modules_in_folder+=("$xzm_path")
-	done < <(find "$1" -name "*.xzm" -maxdepth 1)
+	if [ -n "$modules_raw" ]; then
+		while read -r xzm_path; do
+			if [ -z "$exclude_files" ] || ! [[ "$(basename "$xzm_path")" =~ "$exclude_files" ]]; then
+				modules_in_folder+=("$xzm_path")
+			fi
+		done < <(echo "$modules_raw")
+	fi
 
 	if [ "${#modules_in_folder[*]}" -eq 0 ]; then
 		red "No modules found in folder $1"
@@ -368,11 +410,22 @@ upgrade_folder () {
 
 swtch_rt "$@"
 
-# Option vars
+# Options: default values
 update_list="ask"
+move_files="ask"
+overwrite_files="no"
+recursive="no"
+exclude_files=""
+exclude_folders=""
 
+
+# Parse long help option
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	get_help
+	exit
+fi
 # Parse short options
-while getopts ":huU" thisopt; do
+while getopts ":huUmMorx:X:" thisopt; do
 	case "$thisopt" in
 		h)
 			get_help
@@ -384,6 +437,27 @@ while getopts ":huU" thisopt; do
 		U)
 			update_list="no"
 			;;
+		m)
+			move_files="yes"
+			;;
+		M)
+			move_files="no"
+			;;
+		o)
+			overwrite_files="yes"
+			;;
+		r)
+			recursive="yes"
+			;;
+		x)
+			exclude_files="$OPTARG"
+			;;
+		X)
+			exclude_folders="$OPTARG"
+			;;
+		:)
+			error_quit 4 "used the -x or -X option without specifying a word to exclude in file/folder names"
+			;;
 		?)
 			error_quit 1 "invalid option -$OPTARG"
 			;;
@@ -391,12 +465,6 @@ while getopts ":huU" thisopt; do
 done
 
 shift $(( OPTIND - 1 ))
-
-# Parse long options
-if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-	get_help
-	exit
-fi
 
 if [ "$#" -eq 0 ]; then
 	handle_update
