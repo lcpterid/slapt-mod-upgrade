@@ -285,9 +285,9 @@ handle_move () {
 	[ -f "/tmp/$new_mod_name" ] || return 1
 
 	if [ "$move_files" = "yes" ]; then
-		do_move "$old_mod_path" "/tmp/$mod_name" "$new_mod_path"
+		do_move "$old_mod_path" "/tmp/$new_mod_name" "$new_mod_path"
 	elif [ "$move_files" = "ask" ]; then
-		offer_move "$old_mod_path" "/tmp/$mod_name" "$new_mod_path"
+		offer_move "$old_mod_path" "/tmp/$new_mod_name" "$new_mod_path"
 	fi
 }
 
@@ -370,9 +370,9 @@ upgrade_module () {
 		echo "$mod_pkg_list" | tr '\n' ' ' | fold -w "$(tput cols)" -s
 		echo
 		green "Found possible newer packages:"
-		green "${new_packages[@]}" | fold -w "$(tput cols)" -s
+		green "${new_packages[*]}" | fold -w "$(tput cols)" -s
 		echo "Updated module would have new packages:"
-		echo "${all_packages[@]}" | fold -w "$(tput cols)" -s
+		echo "${all_packages[*]}" | fold -w "$(tput cols)" -s
 		lightblue "Do you want to try? (y/n)"
 		read -r tmp_answer
 		if [ "${tmp_answer:0:1}" = "y" ] || [ "${tmp_answer:0:1}" = "Y" ]; then
