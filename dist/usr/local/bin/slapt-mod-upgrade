@@ -36,9 +36,9 @@ get_help () {
 	echo2 "-u          Always update package list"
 	echo2 "-U          Do not update package list"
 	echo2 "-r          Explore folders recursively"
-	echo2 "-m          Always move updated packages to original folder"
+	echo2 "-m          Always move updated packages to original folder, renaming old module to .bak"
 	echo2 "-M          Do not move updated packages to original folder"
-	echo2 "-o          When moving, overwrite packages of the same name WITHOUT making a .bak backup"
+	echo2 "-c          When moving, be cautious. Do not move if .bak file would be overwritten"
 	echo2 "-x word     Exclude modules whose name contains the given word"
 	echo2 "-X word     Exclude folders whose name contains the given word"
 }
@@ -244,44 +244,50 @@ is_untampered () {
 
 do_move () {
 	local old_path
+	local tmp_path
 	local new_path
 	old_path="$1"
-	new_path="$2"
-	if [ "$overwrite_files" = "no" ] && [ -f "$new_path" ]; then
-		mv "$new_path" "$new_path.bak"
+	tmp_path="$2"
+	new_path="$3"
+	if [ "$overwrite_bak_files" = "no" ] && [ -f "${old_path}.bak" ]; then
+		yellow "Did not move $tmp_path because a .bak file of the old module exists, and would be overwritten."
+	else
+		mv "$old_path" "$old_path.bak"
+		mv "$tmp_path" "$new_path"
 	fi
-	mv "$old_path" "$new_path"
 }
 
 offer_move () {
 	local old_mod_path="$(realpath "$1")"
-	local new_mod_path="$(realpath "$2")"
+	local tmp_mod_path="$(realpath "$2")"
+	local new_mod_path="$(realpath "$3")"
 	local ui_deletion_state
 
 	lightblue "Would you like to move the new module from /tmp to the folder $(dirname "$new_mod_path")?"
-	if [ -f "$mod_path" ]; then
-		ui_deletion_state="renamed with extension .bak"
-		[ "$overwrite_files" = "yes" ] && ui_deletion_state="deleted"
-
-		yellow "WARNING: this will overwrite an existing module! The old module will be ${ui_deletion_state}."
+	if [ -f "$old_mod_path" ]; then
+		lightblue "NOTE: The old module will be renamed with extension .bak."
+	fi
+	if [ "$overwrite_bak_files" = "yes" ] && [ -f "${old_mod_path}.bak" ]; then
+		yellow "WARNING: An existing file $(basename "$old_mod_path").bak will be overwritten."
 	fi
 	lightblue "Please type an UPPERCASE Y to proceed."
 	read -r tmp_answer
 	if [ "${tmp_answer:0:1}" = "Y" ]; then
-		do_move "$old_mod_path" "$new_mod_path"
+		do_move "$old_mod_path" "$tmp_mod_path" "$new_mod_path"
 	fi
 }
 
 handle_move () {
-	local mod_path="$(realpath "$1")"
-	local mod_name="$(basename "$mod_path")"
+	local old_mod_path="$(realpath "$1")"
+	local new_mod_path="$(realpath "$2")"
+	local new_mod_name="$(basename "$new_mod_path")"
 
-	[ -f "/tmp/$mod_name" ] || return 1
+	[ -f "/tmp/$new_mod_name" ] || return 1
 
 	if [ "$move_files" = "yes" ]; then
-		do_move "/tmp/$mod_name" "$mod_path"
+		do_move "$old_mod_path" "/tmp/$mod_name" "$new_mod_path"
 	elif [ "$move_files" = "ask" ]; then
-		offer_move "/tmp/$mod_name" "$mod_path"
+		offer_move "$old_mod_path" "/tmp/$mod_name" "$new_mod_path"
 	fi
 }
 
@@ -373,7 +379,7 @@ upgrade_module () {
 			slapt-mod "$compressopt" "${all_packages[@]}"
 			local new_mod_name="${all_packages[0]}.xzm"
 			local new_mod_path="$(dirname "$mod_path")/$new_mod_name"
-			[ -f "/tmp/$new_mod_name" ] && handle_move "$new_mod_path"
+			[ -f "/tmp/$new_mod_name" ] && handle_move "$mod_path" "$new_mod_path"
 		fi
 		unset tmp_answer
 	else
@@ -413,7 +419,7 @@ swtch_rt "$@"
 # Options: default values
 update_list="ask"
 move_files="ask"
-overwrite_files="no"
+overwrite_bak_files="yes"
 recursive="no"
 exclude_files=""
 exclude_folders=""
@@ -425,7 +431,7 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
 	exit
 fi
 # Parse short options
-while getopts ":huUmMorx:X:" thisopt; do
+while getopts ":huUmMcrx:X:" thisopt; do
 	case "$thisopt" in
 		h)
 			get_help
@@ -443,8 +449,8 @@ while getopts ":huUmMorx:X:" thisopt; do
 		M)
 			move_files="no"
 			;;
-		o)
-			overwrite_files="yes"
+		c)
+			overwrite_bak_files="no"
 			;;
 		r)
 			recursive="yes"
