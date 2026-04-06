@@ -28,17 +28,18 @@ get_help () {
 	echo2 "$prog_name: Attempt to upgrade Porteus modules made with slapt-mod."
 	echo2
 	echo2 "Usage:"
-	echo2 "$prog_name [options]                        Update all modules in all known module directories."
+	echo2 "$prog_name [options]                         Update all modules in all known module directories."
 	echo2 "$prog_name [options] /path/to/directory      Update all modules in the given directory."
 	echo2 "$prog_name [options] /path/to/file.xzm       Update the given module only."
 	echo2
 	echo2 "Options:"
+	echo2 "-v          Verbose output, useful for debugging"
 	echo2 "-u          Always update package list"
 	echo2 "-U          Do not update package list"
 	echo2 "-r          Explore folders recursively"
 	echo2 "-m          Always move updated packages to original folder, renaming old module to .bak"
 	echo2 "-M          Do not move updated packages to original folder"
-	echo2 "-c          When moving, be cautious. Do not move if .bak file would be overwritten"
+	echo2 "-c          When moving, be cautious: do not move if .bak file would be overwritten"
 	echo2 "-x word     Exclude modules whose name contains the given word"
 	echo2 "-X word     Exclude folders whose name contains the given word"
 }
@@ -202,7 +203,7 @@ is_valid_module () {
 
 	local filetype="$(file "$1")"
 	grep "quashfs" < <(echo "$filetype") >/dev/null || {
-		red "$1 does not appear to be a squashfs module"
+		[ "$verbosity" = "loud" ] && red "$1 does not appear to be a squashfs module"
 		return 1
 		}
 
@@ -211,7 +212,7 @@ is_valid_module () {
 	local mod_name="$(basename "$mod_path")"
 	local mod_stem="${mod_name%\.xzm}"
 	if ! grep "/var/lib/pkgtools/packages/$mod_stem" < <(lsxzm "$mod_path") >/dev/null; then
-		red "didn't find package file /var/lib/pkgtools/packages/$mod_stem in lsxzm"
+		[ "$verbosity" = "loud" ] && red "didn't find package file /var/lib/pkgtools/packages/$mod_stem in lsxzm"
 		return 1
 	else
 		return 0
@@ -251,6 +252,8 @@ do_move () {
 	new_path="$3"
 	if [ "$overwrite_bak_files" = "no" ] && [ -f "${old_path}.bak" ]; then
 		yellow "Did not move $tmp_path because a .bak file of the old module exists, and would be overwritten."
+	elif [ -n "$(mount | grep -F "$old_path on " )" ]; then
+		yellow "Did not move $tmp_path because the existing module is activated or mounted. Deactivate or unmount the existing module and move the new one manually."
 	else
 		mv "$old_path" "$old_path.bak"
 		mv "$tmp_path" "$new_path"
@@ -294,7 +297,7 @@ handle_move () {
 upgrade_module () {
 	local mod_path="$(realpath "$1")"
 	local mod_name="$(basename "$mod_path")"
-	cyan "Module: $mod_path"
+	[ "$verbosity" = "loud" ] && cyan "Module: $mod_path"
 	is_valid_module "$mod_path" || return 1
 	local filetype="$(file "$1")"
 	local compressopt
@@ -313,7 +316,7 @@ upgrade_module () {
 	local mod_pkg_version
 	local mod_pkg_list_raw="$(valid_packages_in_module "$mod_path")"
 	if [ "$(echo "$mod_pkg_list_raw" | wc -l)" -ne "$(lsxzm "$1" | grep '^/var/lib/pkgtools/packages/.' | wc -l)" ]; then
-		red "Found package with a non-standard name - can't update this module."
+		[ "$verbosity" = "loud" ] && red "Found package with a non-standard name - can't update this module."
 		return 1
 	fi
 
@@ -322,7 +325,7 @@ upgrade_module () {
 	local mod_pkg_list="$(echo "$mod_pkg_list_raw" | grep "^$mod_pkg_name"; echo "$mod_pkg_list_raw" | grep -v "^$mod_pkg_name")"
 
 	if [ "$(echo "$mod_pkg_list_raw" | wc -l)" -ne "$(echo "$mod_pkg_list" | wc -l)" ]; then
-		red "The module seems to be named after a package that is not present inside it. Can't update this module."
+		[ "$verbosity" = "loud" ] && red "The module seems to be named after a package that is not present inside it. Can't update this module."
 		return 1
 	fi
 
@@ -358,22 +361,18 @@ upgrade_module () {
 	done < <(echo "$mod_pkg_list")
 
 	if [ "$can_rebuild" = "no" ]; then
-		red "Couldn't find all packages needed to rebuild module. First missing package was $first_missing_package."
+		[ "$verbosity" = "loud" ] && red "Couldn't find all packages needed to rebuild module. First missing package was $first_missing_package."
 		return 1
 	elif ! is_untampered "$mod_path"; then
-		yellow "NB: this module may have been edited after creation with slapt-mod. If so, be careful not to lose your changes."
+		[ "$verbosity" = "loud" ] && yellow "NB: this module may have been edited after creation with slapt-mod. If so, be careful not to lose your changes."
 	fi
 
 
 	if [ "$found_newer" = "yes" ]; then
-		echo "Existing packages in this module:"
-		echo "$mod_pkg_list" | tr '\n' ' ' | fold -w "$(tput cols)" -s
+		echo "Existing packages in $mod_name: $mod_pkg_list" | tr '\n' ' ' | fold -w "$(tput cols)" -s
 		echo
-		green "Found possible newer packages:"
-		green "${new_packages[*]}" | fold -w "$(tput cols)" -s
-		echo "Updated module would have new packages:"
-		echo "${all_packages[*]}" | fold -w "$(tput cols)" -s
-		lightblue "Do you want to try? (y/n)"
+		green "Found possible newer packages: ${new_packages[*]}" | fold -w "$(tput cols)" -s
+		lightblue "Do you want to attempt the upgrade? (y/n)"
 		read -r tmp_answer
 		if [ "${tmp_answer:0:1}" = "y" ] || [ "${tmp_answer:0:1}" = "Y" ]; then
 			slapt-mod "$compressopt" "${all_packages[@]}"
@@ -383,7 +382,7 @@ upgrade_module () {
 		fi
 		unset tmp_answer
 	else
-		yellow "Didn't find any updates."
+		[ "$verbosity" = "loud" ] && yellow "Didn't find any updates."
 	fi
 
 }
@@ -406,7 +405,7 @@ upgrade_folder () {
 	fi
 
 	if [ "${#modules_in_folder[*]}" -eq 0 ]; then
-		red "No modules found in folder $1"
+		[ "$verbosity" = "loud" ] && red "No modules found in folder $1"
 	else
 		for mif in "${modules_in_folder[@]}"; do
 			upgrade_module "$mif"
@@ -423,6 +422,7 @@ overwrite_bak_files="yes"
 recursive="no"
 exclude_files=""
 exclude_folders=""
+verbosity="quiet"
 
 
 # Parse long help option
@@ -431,11 +431,14 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
 	exit
 fi
 # Parse short options
-while getopts ":huUmMcrx:X:" thisopt; do
+while getopts ":hvuUmMcrx:X:" thisopt; do
 	case "$thisopt" in
 		h)
 			get_help
 			exit
+			;;
+		v)
+			verbosity="loud"
 			;;
 		u)
 			update_list="yes"
@@ -477,7 +480,7 @@ if [ "$#" -eq 0 ]; then
 	slapt_getlist
 	populate_folders
 	for mf in "${module_folders[@]}"; do
-		lightblue "Starting module directory: $mf"
+		[ "$verbosity" = "loud" ] && lightblue "Starting module directory: $mf"
 		upgrade_folder "$mf"
 	done
 else
