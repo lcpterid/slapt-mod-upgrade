@@ -6,7 +6,7 @@ if [ "$(whoami)" != "root" ]; then
 	exit 1
 fi
 
-pkg_name="slapt-mod-upgrade"
+pkg_name="upgrade-mods"
 pkg_version="0.0.3dev"
 pkg_arch="noarch"
 
